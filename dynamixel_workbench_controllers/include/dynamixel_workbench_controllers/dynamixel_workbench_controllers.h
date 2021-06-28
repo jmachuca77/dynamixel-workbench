@@ -83,8 +83,11 @@ class DynamixelController
 
   bool is_joint_state_topic_;
   bool is_cmd_vel_topic_;
+  bool is_omni_;
   bool use_moveit_;
+  bool invertX_, invertY_, invertZ_;
 
+  double robot_radius_;
   double wheel_separation_;
   double wheel_radius_;
 
