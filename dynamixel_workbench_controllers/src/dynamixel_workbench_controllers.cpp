@@ -31,6 +31,11 @@ DynamixelController::DynamixelController()
   is_joint_state_topic_ = priv_node_handle_.param<bool>("use_joint_states_topic", true);
   is_cmd_vel_topic_ = priv_node_handle_.param<bool>("use_cmd_vel_topic", false);
   use_moveit_ = priv_node_handle_.param<bool>("use_moveit", false);
+  is_omni_= priv_node_handle_.param<bool>("mobile_robot_config/is_omni", false);
+
+  invertX = priv_node_handle_.param<bool>("mobile_robot_config/invertX", false);
+  invertY = priv_node_handle_.param<bool>("mobile_robot_config/invertY", false);
+  invertZ = priv_node_handle_.param<bool>("mobile_robot_config/invertZ", false);
 
   read_period_ = priv_node_handle_.param<double>("dxl_read_period", 0.010f);
   write_period_ = priv_node_handle_.param<double>("dxl_write_period", 0.010f);
@@ -40,6 +45,7 @@ DynamixelController::DynamixelController()
   {
     wheel_separation_ = priv_node_handle_.param<double>("mobile_robot_config/seperation_between_wheels", 0.0);
     wheel_radius_ = priv_node_handle_.param<double>("mobile_robot_config/radius_of_wheel", 0.0);
+    robot_radius_ = priv_node_handle_.param<double>("mobile_robot_config/robot_radius", 0.12);
   }
 
   dxl_wb_ = new DynamixelWorkbench;
@@ -503,6 +509,65 @@ void DynamixelController::publishCallback(const ros::TimerEvent&)
 #endif
 }
 
+void DynamixelController::CalcWheelSpeed(double actualDt){
+	double t[3];
+  
+  if(invertX) {
+  	targetVelX *= -1;
+  }
+
+  if(invertY) {
+  	targetVelY *= -1;
+  }
+
+  if(invertZ) {
+  	targetRotZ *= -1;
+  }
+
+  t[0] = -((targetVelY * 1) + (targetRotZ * robot_radius_)) / wheel_radius_;
+  t[1] = -((targetVelX * sin( 2 * M_PI / 3))	+ (targetVelY * cos( 2 * M_PI / 3)) 	+ (targetRotZ * robot_radius_)) / wheel_radius_;
+  t[2] = -((targetVelX * sin(-2 * M_PI / 3))	+ (targetVelY * cos(-2 * M_PI / 3)) 	+ (targetRotZ * robot_radius_)) / wheel_radius_;
+
+	// double _k = 1.0;
+
+	// if(LimitVelocity){
+	// 	for(int i = 0; i < 3; i++){
+	// 		auto _a = fabs(t[i]);
+	// 		if(_a * _k > MaximumVelocity){
+	// 			_k = MaximumVelocity / _a;
+  //               ROS_WARN("An infeasible velocity command detected! You might want to look into it.");
+	// 		}
+	// 	}
+
+	// 	for(int i = 0; i < 3; i++){
+	// 		t[i] *= _k;
+	// 	}
+	// }
+
+	// if(LimitAcceleration){
+	// 	float maxVelDelta = MaximumAcceleration * actualDt;
+
+	// 	_k = 1.0;
+
+	// 	for(int i = 0; i < 3; i++){
+	// 		double diffabs = fabs(t[i] - lastTarget[i]);
+	// 		if(diffabs * _k > maxVelDelta){
+	// 			_k = maxVelDelta / diffabs;
+	// 			ROS_WARN("An infeasible acceleration detected! You might want to look into it.");
+	// 		}
+	// 	}
+
+	// 	for(int i = 0; i < 3; i++){
+	// 		t[i] = lastTarget[i] + ((t[i] - lastTarget[i]) * _k);
+	// 	}
+	// }
+
+	for(int i = 0; i < 3; i++){
+		lastTarget[i] = t[i];
+		motorCmdVelmsg[i].data = t[i];
+	}
+}
+
 void DynamixelController::commandVelocityCallback(const geometry_msgs::Twist::ConstPtr &msg)
 {
   bool result = false;
@@ -512,7 +577,12 @@ void DynamixelController::commandVelocityCallback(const geometry_msgs::Twist::Co
   int32_t dynamixel_velocity[dynamixel_.size()];
 
   const uint8_t LEFT = 0;
-  const uint8_t RIGHT = 1;
+  const uint8_t BACK = 1;
+  const uint8_t RIGHT = 2;
+
+  targetVelX = static_cast<double>(msg->linear.x);
+  targetVelY = static_cast<double>(msg->linear.y);
+  targetRotZ = static_cast<double>(msg->angular.z);
 
   double robot_lin_vel = msg->linear.x;
   double robot_ang_vel = msg->angular.z;
@@ -528,18 +598,33 @@ void DynamixelController::commandVelocityCallback(const geometry_msgs::Twist::Co
     id_array[id_cnt++] = (uint8_t)dxl.second;
   }
 
-//  V = r * w = r * (RPM * 0.10472) (Change rad/sec to RPM)
-//       = r * ((RPM * Goal_Velocity) * 0.10472)		=> Goal_Velocity = V / (r * RPM * 0.10472) = V * VELOCITY_CONSTATNE_VALUE
+
+
+  //  V = r * w = r * (RPM * 0.10472) (Change rad/sec to RPM)
+  //       = r * ((RPM * Goal_Velocity) * 0.10472)		=> Goal_Velocity = V / (r * RPM * 0.10472) = V * VELOCITY_CONSTATNE_VALUE
 
   double velocity_constant_value = 1 / (wheel_radius_ * rpm * 0.10472);
 
-  wheel_velocity[LEFT]  = robot_lin_vel - (robot_ang_vel * wheel_separation_ / 2);
-  wheel_velocity[RIGHT] = robot_lin_vel + (robot_ang_vel * wheel_separation_ / 2);
+  if(is_omni_) {
+    ROS_INFO("Calculating for Omni3 Drive");
+    current_time = ros::Time::now().toSec();
+    CalcWheelSpeed(current_time - last_time);
+    wheel_velocity[BACK]  = motorCmdVelmsg[0].data;
+    wheel_velocity[RIGHT] = motorCmdVelmsg[1].data;
+    wheel_velocity[LEFT]  = motorCmdVelmsg[2].data;
+  } else {
+    wheel_velocity[LEFT]  = robot_lin_vel - (robot_ang_vel * wheel_separation_ / 2);
+    wheel_velocity[RIGHT] = robot_lin_vel + (robot_ang_vel * wheel_separation_ / 2);
+  }
+
+  ROS_INFO("Requested Speed VelX: %0.02f VelY: %0.02f Ang: %0.02f", targetVelX, targetVelY, targetRotZ);
+  ROS_INFO("Wheel Speeds back: %0.02f, left: %0.02f, right: : %0.02f", wheel_velocity[BACK], wheel_velocity[LEFT], wheel_velocity[RIGHT]);
 
   if (dxl_wb_->getProtocolVersion() == 2.0f)
   {
     if (strcmp(dxl_wb_->getModelName(id_array[0]), "XL-320") == 0)
     {
+      ROS_INFO("Protocol 2, XL-320");
       if (wheel_velocity[LEFT] == 0.0f) dynamixel_velocity[LEFT] = 0;
       else if (wheel_velocity[LEFT] < 0.0f) dynamixel_velocity[LEFT] = ((-1.0f) * wheel_velocity[LEFT]) * velocity_constant_value + 1023;
       else if (wheel_velocity[LEFT] > 0.0f) dynamixel_velocity[LEFT] = (wheel_velocity[LEFT] * velocity_constant_value);
@@ -550,12 +635,22 @@ void DynamixelController::commandVelocityCallback(const geometry_msgs::Twist::Co
     }
     else
     {
+      ROS_INFO("Protocol 2");
+      //ROS_INFO("Velocity Constant %0.02f", velocity_constant_value);
+      //ROS_INFO("Robot Radius: %0.02f Wheel Radius:  %0.02f, RPM: %0.02f", robot_radius_, wheel_radius_, rpm);
+      dynamixel_velocity[BACK]  = wheel_velocity[BACK] * velocity_constant_value;
       dynamixel_velocity[LEFT]  = wheel_velocity[LEFT] * velocity_constant_value;
       dynamixel_velocity[RIGHT] = wheel_velocity[RIGHT] * velocity_constant_value;
+      ROS_INFO("Back: %d Left: %d Right: %d", dynamixel_velocity[BACK], dynamixel_velocity[LEFT], dynamixel_velocity[RIGHT]);
+      float rpm_temp = dynamixel_velocity[LEFT] * 0.229;
+      float angspeed_temp = rpm_temp/60*2*M_PI;
+      float linearspeed_temp = angspeed_temp * wheel_radius_;
+      //ROS_INFO("RPM: %0.02f, ANGSpeed: %0.02f rad/s, LinSpeed: %0.02f m/s", rpm_temp, angspeed_temp, linearspeed_temp);
     }
   }
   else if (dxl_wb_->getProtocolVersion() == 1.0f)
   {
+    ROS_INFO("Protocol 1");
     if (wheel_velocity[LEFT] == 0.0f) dynamixel_velocity[LEFT] = 0;
     else if (wheel_velocity[LEFT] < 0.0f) dynamixel_velocity[LEFT] = ((-1.0f) * wheel_velocity[LEFT]) * velocity_constant_value + 1023;
     else if (wheel_velocity[LEFT] > 0.0f) dynamixel_velocity[LEFT] = (wheel_velocity[LEFT] * velocity_constant_value);

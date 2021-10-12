@@ -23,6 +23,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <std_msgs/Float64.h>
+
 #include <sensor_msgs/JointState.h>
 #include <geometry_msgs/Twist.h>
 #include <trajectory_msgs/JointTrajectory.h>
@@ -84,9 +86,28 @@ class DynamixelController
   bool is_joint_state_topic_;
   bool is_cmd_vel_topic_;
   bool use_moveit_;
+  bool is_omni_;
 
   double wheel_separation_;
   double wheel_radius_;
+
+  double current_time = 0.0;
+  double last_time = 0.0;
+  double robot_radius_;
+  bool LimitVelocity = true;
+  bool LimitAcceleration = true;
+  double MaximumAcceleration = 50;
+  double MaximumVelocity = 10;
+    
+  bool invertX;
+  bool invertY;
+  bool invertZ;
+  
+  double targetVelX;
+  double targetVelY;
+  double targetRotZ;
+  double lastTarget[3];
+  std_msgs::Float64 motorCmdVelmsg[3];
 
   JointTrajectory *jnt_tra_;
   trajectory_msgs::JointTrajectory *jnt_tra_msg_;
@@ -121,6 +142,8 @@ class DynamixelController
   void readCallback(const ros::TimerEvent&);
   void writeCallback(const ros::TimerEvent&);
   void publishCallback(const ros::TimerEvent&);
+
+  void CalcWheelSpeed(double actualDt);
 
   void commandVelocityCallback(const geometry_msgs::Twist::ConstPtr &msg);
   void trajectoryMsgCallback(const trajectory_msgs::JointTrajectory::ConstPtr &msg);
